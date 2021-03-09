@@ -18,7 +18,7 @@ def invoke_sfn(create_clust,terminate_clust,partition_to_process,response_length
         # Comment below code when needed to stop execution for testing
     response_step = client_step.start_execution(
 
-        stateMachineArn='arn:aws:states:us-east-1:970770904251:stateMachine:MyStateMachine',
+        stateMachineArn='arn:aws:states:us-east-1:XXXXXXXXXX:stateMachine:MyStateMachine',
 
         input= json.dumps(input_step)
 
