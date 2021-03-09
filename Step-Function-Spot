@@ -1,0 +1,252 @@
+{
+  "StartAt": "Should_Create_Cluster",
+  "States": {
+    "Should_Create_Cluster": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.CreateCluster",
+          "BooleanEquals": true,
+          "Next": "Create_A_Cluster"
+        },
+        {
+          "Variable": "$.CreateCluster",
+          "BooleanEquals": false,
+          "Next": "Enable_Termination_Protection"
+        }
+      ],
+      "Default": "Create_A_Cluster"
+    },
+    "Create_A_Cluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:createCluster.sync",
+      "Parameters": {
+        "Name": "WorkflowCluster",
+        "VisibleToAllUsers": true,
+        "ReleaseLabel": "emr-5.28.0",
+        "Applications": [{ "Name": "Spark" }],
+        "ServiceRole": "EMR_DefaultRole",
+        "JobFlowRole": "EMR_EC2_DefaultRole",
+        "LogUri": "s3://aws-logs-AccountXXXXNumber-us-east-1/elasticmapreduce",
+        "Instances": {
+          "KeepJobFlowAliveWhenNoSteps": true,
+          "InstanceFleets": [
+            {
+              "InstanceFleetType": "MASTER",
+              "TargetOnDemandCapacity": 1,
+              "InstanceTypeConfigs": [
+                {
+                  "InstanceType": "m4.xlarge"
+                }
+              ]
+            },
+            {
+              "InstanceFleetType": "CORE",
+              "TargetOnDemandCapacity": 2,
+              "TargetSpotCapacity": 0,
+              "LaunchSpecifications" : { "OnDemandSpecification": {"AllocationStrategy": "LOWEST_PRICE"}
+                                       },
+              "InstanceTypeConfigs": [{"WeightedCapacity":4,"InstanceType":"r4.xlarge"},{"WeightedCapacity":4,"InstanceType":"r5.xlarge"}] 
+            }
+          ],
+          "Ec2SubnetId": "subnet-004125e014aa50064"
+        }
+      },
+      "ResultPath": "$.CreateClusterResult",
+      "Next": "Merge_Results"
+    },
+    "Merge_Results": {
+      "Type": "Pass",
+      "Parameters": {
+        "CreateCluster.$": "$.CreateCluster",
+        "TerminateCluster.$": "$.TerminateCluster",
+        "ClusterId.$": "$.CreateClusterResult.ClusterId",
+        "last_partition.$": "$.last_partition",
+        "last_partition_full.$": "$.last_partition",
+    	"response_length.$": "$.response_length",
+        "Execution.$": "$$.Execution.Id",
+        "EMR_Input": {
+                "Args": [
+                    {
+                        "Arg1": "spark-submit"
+                    },
+                    {
+                        "Arg2": "--packages"
+                    },
+                    {
+                        "Arg3": "org.apache.spark:spark-avro_2.11:2.4.3"
+                    },
+                    {
+                        "Arg4": "/home/hadoop/spark1.py"
+                    },
+                    {
+                        "Arg6.$": "$.last_partition"
+                    }
+                ]
+            }
+      },
+      "Next": "Enable_Termination_Protection"
+    },
+    "Enable_Termination_Protection": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:setClusterTerminationProtection",
+      "Parameters": {
+        "ClusterId.$": "$.ClusterId",
+        "TerminationProtected": true
+      },
+      "ResultPath": null,
+      "Next": "Add_Steps_Parallel"
+    },
+    "Add_Steps_Parallel": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Step_One",
+          "States": {
+            "Step_One": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+              "Parameters": {
+                "ClusterId.$": "$.ClusterId",
+                "Step": {
+                  "Name": "The first step",
+                  "ActionOnFailure": "CONTINUE",
+                  "HadoopJarStep": {
+                    "Jar": "command-runner.jar",
+                    "Args": ["aws", "s3", "cp", "s3://kafka-dbstream/script/spark1.py", "/home/hadoop/"]
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Wait_60_Seconds",
+          "States": {
+            "Wait_60_Seconds": {
+              "Type": "Wait",
+              "Seconds": 60,
+              "Next": "Step_Two"
+            },
+            "Step_Two": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::elasticmapreduce:addStep.sync",
+              "Parameters": {
+                "ClusterId.$": "$.ClusterId",
+                
+                "Step": {
+                  "Name": "The second step",
+                  "ActionOnFailure": "CONTINUE",
+                  "HadoopJarStep": {
+                    "Jar": "command-runner.jar",
+                    "Args.$": "$.EMR_Input.Args[*][*]"
+                  }
+                }
+              },
+              "ResultPath": "$.AddStepsResult",
+              "Next": "Wait_Another_60_Seconds"
+            },
+            "Wait_Another_60_Seconds": {
+              "Type": "Wait",
+              "Seconds": 60,
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": null,
+      "Next": "Disable_Termination_Protection"
+    },
+
+    "Disable_Termination_Protection": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:setClusterTerminationProtection",
+      "Parameters": {
+        "ClusterId.$": "$.ClusterId",
+        "TerminationProtected": false
+      },
+      "ResultPath": null,
+      "Next": "Should_Terminate_Cluster"
+    },
+    "Should_Terminate_Cluster": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.TerminateCluster",
+          "BooleanEquals": true,
+          "Next": "Terminate_Cluster"
+        },
+        {
+          "Variable": "$.TerminateCluster",
+          "BooleanEquals": false,
+          "Next": "Load_Redshift"
+        }
+      ],
+      "Default": "Load_Redshift"
+    },
+    "Terminate_Cluster": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::elasticmapreduce:terminateCluster.sync",
+      "Parameters": {
+        "ClusterId.$": "$.ClusterId"
+      },
+      "ResultPath": null,
+      "Next": "Load_Redshift"
+    },
+    "Load_Redshift": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::ecs:runTask.sync",
+  "Parameters": {
+    "LaunchType": "FARGATE",
+    "Cluster": "arn:aws:ecs:us-east-1:AccountXXXXNumber:cluster/vpcrunpsqlredshift",
+    "TaskDefinition": "arn:aws:ecs:us-east-1:AccountXXXXNumber:task-definition/runpsqlredshift:1",
+    "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "subnet-01428199e2a4d3562",
+              "subnet-004125e014aa50064"
+            ],
+            "AssignPublicIp": "ENABLED"
+          }
+        }
+  },
+  "ResultPath": null,
+  "Next": "Update_Partition",
+  "TimeoutSeconds": 300,
+  "Retry": [
+    {
+      "ErrorEquals": [
+        "ErrorA",
+        "ErrorB"
+      ],
+      "IntervalSeconds": 1,
+      "BackoffRate": 2,
+      "MaxAttempts": 2
+    },
+    {
+      "ErrorEquals": [
+        "ErrorC"
+      ],
+      "IntervalSeconds": 5
+      }
+    ]
+  },
+  "Update_Partition": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": {
+    "FunctionName": "arn:aws:lambda:us-east-1:AccountXXXXNumber:function:s3-partition-update-dynamo-ETL:$LATEST",
+    "Payload": {
+      "Input.$": "$",
+      "Execution.$": "$$.Execution.Id"
+    }
+  },
+  "Next": "Ending_task"
+},
+    "Ending_task": {
+      "Type": "Pass",
+emr      "End": true
+    }
+  }
+}
